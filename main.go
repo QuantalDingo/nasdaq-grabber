@@ -6,85 +6,74 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"time"
+
+	"nasdaq-grabber/sse"
+	"nasdaq-grabber/types"
+
+	"github.com/gorilla/mux"
 )
 
-type PrimaryData struct {
-	LastSalePrice      string `json:"lastSalePrice"`
-	NetChange          string `json:"netChange"`
-	PercentageChange   string `json:"percentageChange"`
-	DeltaIndicator     string `json:"deltaIndicator"`
-	LastTradeTimestamp string `json:"lastTradeTimestamp"`
-	IsRealTime         bool   `json:"isRealTime"`
-}
-
-type SecondaryData struct {
-	LastSalePrice      string `json:"lastSalePrice"`
-	NetChange          string `json:"netChange"`
-	PercentageChange   string `json:"percentageChange"`
-	DeltaIndicator     string `json:"deltaIndicator"`
-	LastTradeTimestamp string `json:"lastTradeTimestamp"`
-	IsRealTime         bool   `json:"isRealTime"`
-}
-
-type Volume struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
-type PreviousClose struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
-type OpenPrice struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
-type MarketCap struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
-type KeyStats struct {
-	Volume        Volume        `json:"Volume"`
-	PreviousClose PreviousClose `json:"PreviousClose"`
-	OpenPrice     OpenPrice     `json:"OpenPrice"`
-	MarketCap     MarketCap     `json:"MarketCap"`
-}
-
-type Data struct {
-	Symbol         string        `json:"symbol"`
-	CompanyName    string        `json:"companyName"`
-	StockType      string        `json:"stockType"`
-	Exchange       string        `json:"exchange"`
-	IsNasdaqListed bool          `json:"isNasdaqListed"`
-	IsNasdaq100    bool          `json:"isNasdaq100"`
-	IsHeld         bool          `json:"isHeld"`
-	PrimaryData    PrimaryData   `json:"primaryData"`
-	SecondaryData  SecondaryData `json:"secondaryData"`
-	KeyStats       KeyStats      `json:"keyStats"`
-	MarketStatus   string        `json:"marketStatus"`
-	AssetClass     string        `json:"assetClass"`
-}
-
-type ResponseData struct {
-	Data    Data   `json:"data"`
-	Message string `json:"message"`
-	Status  Status `json:"status"`
-}
-
-type Status struct {
-	RCode            int    `json:"rCode"`
-	BCodeMessage     string `json:"bCodeMessage"`
-	DeveloperMessage string `json:"developerMessage"`
-}
-
 func main() {
-	parsePage("https://api.nasdaq.com/api/quote/AMZN/info?assetclass=stocks")
+	companies := [...]types.PopularQuote{{Symbol: "FB", CompanyName: "Facebook, Inc."},
+		{Symbol: "AMZN", CompanyName: "Amazon.com, Inc."},
+		{Symbol: "MSFT", CompanyName: "Microsoft Corporation"},
+		{Symbol: "AAPL", CompanyName: "Apple Inc."},
+		{Symbol: "GOOGL", CompanyName: "Alphabet Inc."}}
+
+	router := mux.NewRouter()
+
+	broker := sse.NewServer()
+
+	router.Handle("/stocks", broker)
+
+	router.HandleFunc("/quotes", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+
+		defer r.Body.Close()
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Fatal(err)
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var quotes []string
+		err = json.Unmarshal(body, &quotes)
+		if err != nil {
+			log.Fatal(err)
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Println(quotes)
+	}).Methods("POST")
+
+	router.HandleFunc("/quotes", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+
+		json, err := json.Marshal(companies)
+		if err != nil {
+			log.Fatal(err)
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rw.Write(json)
+	}).Methods("GET")
+
+	go func() {
+		for {
+			time.Sleep(time.Second * 5)
+			eventString := fmt.Sprintf("the time is %v", time.Now())
+			log.Println("Receiving event")
+			broker.Notifier <- []byte(eventString)
+		}
+	}()
+
+	log.Fatal("HTTP server error: ", http.ListenAndServe("localhost:3000", router))
 }
 
-func parsePage(url string) {
+func getQuotes(url string) (response types.ResponseData) {
 	res, err := http.Get(url)
 
 	if err != nil {
@@ -102,12 +91,14 @@ func parsePage(url string) {
 		log.Fatal(err)
 	}
 
-	var responseData ResponseData
+	var responseData types.ResponseData
 
 	err = json.Unmarshal(body, &responseData)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("%#v\n", responseData)
+	fmt.Printf("\n%#v\n", responseData)
+
+	return responseData
 }
